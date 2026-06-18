@@ -1,0 +1,153 @@
+name: agent-sandbox-temporal
+
+# ---------------------------------------------------------------------------
+# Brings up: Temporal (server + UI + Postgres), Langfuse (web + Postgres),
+# and the app (api + worker). The worker mounts the Docker socket so it can
+# launch sandbox child containers.
+#
+# Before `docker compose up`, build the sandbox image once on the host:
+#   docker build -t agent-sandbox:latest -f sandbox/Dockerfile.sandbox sandbox
+# (For gVisor isolation, install runsc on the host and set SANDBOX_RUNTIME=runsc.)
+# ---------------------------------------------------------------------------
+
+x-app-env: &app-env
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
+  ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+  TEMPORAL_ADDRESS: temporal:7233
+  TEMPORAL_NAMESPACE: default
+  TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-agent-sandbox}
+  MAX_ITERATIONS: ${MAX_ITERATIONS:-4}
+  WORKFLOW_TIMEOUT_SECONDS: ${WORKFLOW_TIMEOUT_SECONDS:-600}
+  SANDBOX_RUNTIME: ${SANDBOX_RUNTIME:-auto}
+  SANDBOX_IMAGE: ${SANDBOX_IMAGE:-agent-sandbox:latest}
+  SANDBOX_MEMORY: ${SANDBOX_MEMORY:-512m}
+  SANDBOX_CPUS: ${SANDBOX_CPUS:-1.0}
+  SANDBOX_PIDS: ${SANDBOX_PIDS:-128}
+  SANDBOX_TIMEOUT_SECONDS: ${SANDBOX_TIMEOUT_SECONDS:-30}
+  RUNS_DIR: /data/runs
+  # MUST be the absolute host path of the ./.runs bind mount (used for nested docker mounts)
+  RUNS_DIR_HOST: ${RUNS_DIR_HOST:-${PWD}/.runs}
+  LANGFUSE_HOST: http://langfuse:3000
+  LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-local-dev}
+  LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-local-dev}
+
+services:
+  # ----------------------------------------------------------------- Temporal
+  temporal-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: temporal
+    volumes: [temporal-db-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  temporal:
+    image: temporalio/auto-setup:1.25.2
+    depends_on:
+      temporal-db:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal
+      POSTGRES_SEEDS: temporal-db
+    ports: ["7233:7233"]
+    healthcheck:
+      test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  temporal-ui:
+    image: temporalio/ui:2.32.0
+    depends_on: [temporal]
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports: ["8080:8080"]
+
+  # ----------------------------------------------------------------- Langfuse
+  langfuse-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+      POSTGRES_DB: langfuse
+    volumes: [langfuse-db-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  langfuse:
+    image: langfuse/langfuse:2
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3001
+      NEXTAUTH_SECRET: local-dev-nextauth-secret-change-me
+      SALT: local-dev-salt-change-me
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_INIT_ORG_ID: local
+      LANGFUSE_INIT_PROJECT_ID: local
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-local-dev}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-local-dev}
+      LANGFUSE_INIT_USER_EMAIL: dev@example.com
+      LANGFUSE_INIT_USER_PASSWORD: dev-password
+    ports: ["3001:3000"]
+
+  # --------------------------------------------------------------- OpenAI proxy
+  openai-proxy:
+    build: ./openai-proxy
+    depends_on: [api]
+    ports: ["8001:8001"]
+
+  # --------------------------------------------------------------- Open WebUI
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    depends_on: [openai-proxy]
+    environment:
+      ENABLE_OLLAMA_API: "false"
+      ENABLE_OPENAI_API: "true"
+      OPENAI_API_BASE_URL: "http://openai-proxy:8001/v1"
+      OPENAI_API_KEY: "local"
+      WEBUI_AUTH: "false"
+    volumes: [open-webui-data:/app/backend/data]
+    ports: ["3002:8080"]
+
+  # ----------------------------------------------------------------- App
+  api:
+    build: .
+    command: ["dotnet", "/app/api/AgentSandbox.Api.dll"]
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment: *app-env
+    volumes:
+      - ./.runs:/data/runs
+    ports: ["8000:8000"]
+
+  worker:
+    build: .
+    command: ["dotnet", "/app/worker/AgentSandbox.Worker.dll"]
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment: *app-env
+    volumes:
+      - ./.runs:/data/runs
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  temporal-db-data:
+  langfuse-db-data:
+  open-webui-data:

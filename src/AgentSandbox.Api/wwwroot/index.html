@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>agent-sandbox-temporal</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1f232c; --border: #2a2f3a;
+    --text: #e6e8ec; --muted: #9aa3b2; --accent: #6ea8fe;
+    --ok: #3fb950; --run: #d29922; --err: #f85149; --pending: #6e7681;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .links a { color: var(--muted); text-decoration: none; margin-left: 16px; font-size: 13px; }
+  header .links a:hover { color: var(--accent); }
+  main { max-width: 980px; margin: 0 auto; padding: 24px; display: grid; gap: 20px; grid-template-columns: 1fr 1fr; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
+  .card.full { grid-column: 1 / -1; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 6px; text-transform: uppercase; letter-spacing: .04em; }
+  textarea, input[type=text] {
+    width: 100%; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+    color: var(--text); padding: 10px 12px; font: inherit; resize: vertical;
+  }
+  textarea { min-height: 90px; }
+  input[type=file] { color: var(--muted); font-size: 13px; }
+  .row { display: flex; gap: 12px; align-items: center; margin-top: 16px; }
+  button {
+    background: var(--accent); color: #0b1020; border: none; border-radius: 8px;
+    padding: 10px 18px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); font-weight: 500; }
+  .runid { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
+  .state { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .state.running { background: rgba(210,153,34,.15); color: var(--run); }
+  .state.succeeded { background: rgba(63,185,80,.15); color: var(--ok); }
+  .state.failed { background: rgba(248,81,73,.15); color: var(--err); }
+  .state.pending { background: rgba(110,118,129,.2); color: var(--pending); }
+  ul.steps { list-style: none; margin: 0; padding: 0; }
+  ul.steps li { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  ul.steps li:last-child { border-bottom: none; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .dot.running { background: var(--run); animation: pulse 1s infinite; }
+  .dot.ok { background: var(--ok); }
+  .dot.error { background: var(--err); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  .step-name { font-weight: 500; }
+  .iter { font-size: 11px; color: var(--muted); background: var(--panel2); padding: 1px 7px; border-radius: 999px; }
+  .detail { font-size: 12px; color: var(--err); margin-left: auto; max-width: 50%; text-align: right;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  pre { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 12px;
+        overflow: auto; font-size: 12.5px; max-height: 320px; }
+  .explain { background: var(--panel2); border-left: 3px solid var(--accent); padding: 12px 14px; border-radius: 6px; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-top: 12px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .empty { color: var(--pending); font-size: 13px; }
+  @media (max-width: 760px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>agent-sandbox-temporal</h1>
+  <div class="links">
+    <a href="http://localhost:8080" target="_blank">Temporal&nbsp;UI ↗</a>
+    <a href="http://localhost:3001" target="_blank">Langfuse ↗</a>
+  </div>
+</header>
+
+<main>
+  <section class="card">
+    <h2 style="margin:0 0 4px;font-size:14px;">New run</h2>
+    <p class="muted" style="margin:0">A planner → coder → sandbox → analyst pipeline. The coder's Python runs in a no-network sandbox.</p>
+
+    <label for="task">Task</label>
+    <textarea id="task">Compute the eigenvalues of [[2,1],[1,2]] and explain what they mean.</textarea>
+
+    <label for="tenant">Tenant</label>
+    <input id="tenant" type="text" value="acme" />
+
+    <label for="files">Input files (optional)</label>
+    <input id="files" type="file" multiple />
+
+    <div class="row">
+      <button id="run">Run</button>
+      <button id="reset" class="ghost" hidden>New run</button>
+      <span id="runid" class="runid"></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;">
+      <h2 style="margin:0;font-size:14px;">Progress</h2>
+      <span id="state" class="state pending">idle</span>
+    </div>
+    <ul class="steps" id="steps"></ul>
+    <p id="steps-empty" class="empty">Start a run to see live progress.</p>
+  </section>
+
+  <section class="card full" id="result-card" hidden>
+    <h2 style="margin:0 0 12px;font-size:14px;">Result</h2>
+    <div id="result"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let es = null;
+
+const dotClass = (s) => s === 'ok' ? 'ok' : s === 'error' ? 'error' : 'running';
+
+function renderSteps(steps) {
+  const ul = $('steps');
+  $('steps-empty').hidden = steps.length > 0;
+  ul.innerHTML = '';
+  for (const s of steps) {
+    const li = document.createElement('li');
+    const iter = s.iteration ? `<span class="iter">iter ${s.iteration}</span>` : '';
+    const detail = s.detail ? `<span class="detail" title="${escapeAttr(s.detail)}">${escapeHtml(s.detail)}</span>` : '';
+    li.innerHTML = `<span class="dot ${dotClass(s.status)}"></span>
+      <span class="step-name">${escapeHtml(s.name)}</span> ${iter} ${detail}`;
+    ul.appendChild(li);
+  }
+}
+
+function setState(state) {
+  const el = $('state');
+  el.textContent = state;
+  el.className = 'state ' + (['running','succeeded','failed'].includes(state) ? state : 'pending');
+}
+
+function renderResult(status) {
+  const r = status.result;
+  if (!r) return;
+  $('result-card').hidden = false;
+  if (r.status === 'failed') {
+    $('result').innerHTML = `<div class="explain" style="border-left-color:var(--err)">
+      <strong>Run failed.</strong><br>${escapeHtml(r.error || 'Unknown error')}</div>
+      <p class="muted">Iterations used: ${r.iterations}</p>`;
+    return;
+  }
+  $('result').innerHTML = `
+    <div class="explain">${escapeHtml(r.explanation || '')}</div>
+    <p class="muted">Succeeded in ${r.iterations} iteration(s).</p>
+    <label>Program output</label>
+    <pre>${escapeHtml(r.programOutput || '')}</pre>
+    <details><summary>Show generated code</summary><pre>${escapeHtml(r.finalCode || '')}</pre></details>`;
+}
+
+function handleStatus(status) {
+  setState(status.state);
+  renderSteps(status.steps || []);
+  if (status.state === 'succeeded' || status.state === 'failed') renderResult(status);
+}
+
+async function startRun() {
+  $('run').disabled = true;
+  $('result-card').hidden = true;
+  $('result').innerHTML = '';
+  $('steps').innerHTML = '';
+  $('runid').textContent = 'starting…';
+  setState('pending');
+  if (es) { es.close(); es = null; }
+
+  const fd = new FormData();
+  fd.append('task', $('task').value);
+  fd.append('tenant', $('tenant').value || 'default');
+  for (const f of $('files').files) fd.append('files', f);
+
+  let runId;
+  try {
+    const resp = await fetch('/runs', { method: 'POST', body: fd });
+    if (!resp.ok) throw new Error((await resp.json()).error || resp.statusText);
+    runId = (await resp.json()).run_id;
+  } catch (e) {
+    $('runid').textContent = 'error: ' + e.message;
+    $('run').disabled = false;
+    return;
+  }
+
+  $('runid').textContent = runId;
+  $('reset').hidden = false;
+
+  es = new EventSource(`/runs/${runId}/stream`);
+  es.addEventListener('status', (ev) => handleStatus(JSON.parse(ev.data)));
+  es.addEventListener('done', (ev) => { handleStatus(JSON.parse(ev.data)); es.close(); es = null; $('run').disabled = false; });
+  es.addEventListener('error', () => { /* EventSource retries automatically; ignore transient */ });
+}
+
+function reset() {
+  if (es) { es.close(); es = null; }
+  $('run').disabled = false;
+  $('reset').hidden = true;
+  $('runid').textContent = '';
+  $('steps').innerHTML = '';
+  $('steps-empty').hidden = false;
+  $('result-card').hidden = true;
+  setState('idle');
+}
+
+function escapeHtml(s) { return String(s).replace(/[&<>]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function escapeAttr(s) { return escapeHtml(s).replace(/"/g, '&quot;'); }
+
+$('run').addEventListener('click', startRun);
+$('reset').addEventListener('click', reset);
+</script>
+</body>
+</html>

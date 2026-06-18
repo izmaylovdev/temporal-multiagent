@@ -1,0 +1,14 @@
+# .NET
+bin/
+obj/
+*.user
+.vs/
+.idea/
+
+# Run storage / secrets
+.runs/
+.env
+
+# OS
+.DS_Store
+*.log
